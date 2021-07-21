@@ -45,27 +45,41 @@ public:
 	}
 private:
 	StoreItems currentItemsToOrder_;
-	
+
 	struct Order {
 		std::string id_;
 		std::string customer_;
 		std::chrono::zoned_seconds time_;
 	};
-	
+
 	std::vector<Order> completedOrders_;
 };
 
+#define DELETE_COPY(Class) \
+	Class() = default; \
+	Class ( const Class& ) = delete; \
+    Class& operator= ( const Class & ) = delete; \
+	Class (Class&&) = default; \
+	Class& operator=(Class&&) = default; 
 
 namespace state {
-	struct EmptyBasket { };
-
-	struct ActiveBasket {
-		StoreItems items_;
+	struct EmptyBasket {
+		DELETE_COPY(EmptyBasket)
 	};
 
-	struct ReadyToOrder { };
+	struct ActiveBasket {
+		DELETE_COPY(ActiveBasket)
+			StoreItems items_;
+	};
 
-	struct Ordered { std::string orderName_; };
+	struct ReadyToOrder {
+		DELETE_COPY(ReadyToOrder)
+	};
+
+	struct Ordered {
+		DELETE_COPY(Ordered);
+		std::string orderName_;
+	};
 }
 
 using ShopState = std::variant<state::EmptyBasket, state::ActiveBasket, state::ReadyToOrder, state::Ordered>;
@@ -86,7 +100,7 @@ namespace event {
 
 using PossibleEvent = std::variant<event::AddItem, event::RemoveItem, event::StartOrder, event::CancelBasket, event::CancelOrder, event::CompleteOrder>;
 
-ShopState onEvent(const state::EmptyBasket& empty, const event::AddItem& newItem, OrderSystem&) {
+ShopState onEvent(state::EmptyBasket&& empty, const event::AddItem& newItem, OrderSystem&) {
 	std::cout << std::format("EmptyBasket -> AddItem \"{}\", count {}\n", newItem.name_, newItem.count_);
 	if (newItem.count_ > 0) // plus check if the item name is in the inventory... future...
 	{
@@ -97,9 +111,9 @@ ShopState onEvent(const state::EmptyBasket& empty, const event::AddItem& newItem
 	return state::EmptyBasket{};
 }
 
-ShopState onEvent(const state::ActiveBasket& active, const event::AddItem& newItem, OrderSystem&) {
+ShopState onEvent(state::ActiveBasket&& active, const event::AddItem& newItem, OrderSystem&) {
 	std::cout << std::format("ActiveBasket -> AddItem \"{}\", count {}\n", newItem.name_, newItem.count_);
-	state::ActiveBasket newState = active;
+	state::ActiveBasket newState = std::move(active);
 	if (newItem.count_ > 0) { // plus check if the item name is in the inventory... future...		
 		newState.items_[newItem.name_] += newItem.count_;
 	}
@@ -107,9 +121,9 @@ ShopState onEvent(const state::ActiveBasket& active, const event::AddItem& newIt
 	return newState;
 }
 
-ShopState onEvent(const state::ActiveBasket& active, const event::RemoveItem& remItem, OrderSystem&) {
+ShopState onEvent(state::ActiveBasket&& active, const event::RemoveItem& remItem, OrderSystem&) {
 	std::cout << std::format("ActiveBasket -> RemoveItem \"{}\", count {}\n", remItem.name_, remItem.count_);
-	state::ActiveBasket newState = active;
+	state::ActiveBasket newState = std::move(active);
 	if (remItem.count_ > 0) {
 		if (newState.items_[remItem.name_] > remItem.count_)
 			newState.items_[remItem.name_] -= remItem.count_;
@@ -117,20 +131,20 @@ ShopState onEvent(const state::ActiveBasket& active, const event::RemoveItem& re
 			newState.items_.erase(remItem.name_);
 	}
 
-	if (active.items_.empty())
+	if (newState.items_.empty())
 		return state::EmptyBasket{};
 
 	return newState;
 }
 
-ShopState onEvent(const state::ActiveBasket& active, const event::StartOrder& startOrder, OrderSystem& orderSys) {
+ShopState onEvent(state::ActiveBasket&& active, const event::StartOrder& startOrder, OrderSystem& orderSys) {
 	std::cout << std::format("ActiveBasket -> StartOrder\n");
 	orderSys.placeOrder(active.items_);
 
 	return state::ReadyToOrder{  };
 }
 
-ShopState onEvent(const state::ReadyToOrder& ready, const event::CompleteOrder& complete, OrderSystem& orderSys) {
+ShopState onEvent(state::ReadyToOrder&& ready, const event::CompleteOrder& complete, OrderSystem& orderSys) {
 	std::cout << std::format("ReadyToOrder -> CompleteOrder for {}\n", complete.userData_);
 	if (!orderSys.completeOrder(complete.userData_))
 		return ready; // + throw some error? report?
@@ -149,8 +163,8 @@ public:
 
 	void processEvent(const PossibleEvent& event) {
 		state_ = std::visit(helper::overload{
-			[this](const auto& state, const auto evt) {
-				return onEvent(state, evt, system_);
+			[this](auto&& state, const auto evt) {
+				return onEvent(std::move(state), evt, system_);
 			}
 			},
 			state_, event);
